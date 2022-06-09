@@ -1,10 +1,13 @@
+//go:build k8s
+
 package cmds
 
 import (
 	"fmt"
-	"github.com/pachyderm/pachyderm/v2/src/server/pfs/fuse"
 	"strings"
 	"testing"
+
+	"github.com/pachyderm/pachyderm/v2/src/server/pfs/fuse"
 
 	"github.com/pachyderm/pachyderm/v2/src/internal/minikubetestenv"
 	"github.com/pachyderm/pachyderm/v2/src/internal/require"
