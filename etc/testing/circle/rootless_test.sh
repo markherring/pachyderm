@@ -36,4 +36,4 @@ kubectl apply -f etc/testing/pod-security-policy.yaml
 ./etc/testing/circle/launch.sh
 
 # Run TestSimplePipeline
-go test -v ./src/server -run TestSimplePipeline
+go test -v ./src/server -run TestSimplePipeline -tags=k8s
