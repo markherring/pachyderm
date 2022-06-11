@@ -388,6 +388,7 @@ workflows:
       - build
       - check-prettier
       - test-envoy
+      - test-go
       - circleci:
           matrix:
             parameters:
