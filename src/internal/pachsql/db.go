@@ -1,6 +1,9 @@
 package pachsql
 
 import (
+	"context"
+	"database/sql"
+	"fmt"
 	"net"
 	"strconv"
 	"strings"
@@ -31,6 +34,15 @@ type Tx = sqlx.Tx
 // Stmt is an alias for sqlx.Stmt which is the standard prepared statement type used throught the project
 type Stmt = sqlx.Stmt
 
+// SchemaTable stores a given table's name and schema.
+type SchemaTable struct {
+	SchemaName string `json:"schemaname"`
+	TableName  string `json:"tablename"`
+}
+
+// RowMap is an alias for map[string]interface{} which is the type used by sqlx.MapScan()
+type RowMap = map[string]interface{}
+
 // OpenURL returns a database connection pool to the database specified by u
 // If password != "" then it will be used for authentication.
 // This function does not confirm that the database is reachable; callers may be interested in pachsql.DB.Ping()
@@ -56,6 +68,103 @@ func OpenURL(u URL, password string) (*DB, error) {
 	}
 	res, err := sqlx.Open(driver, dsn)
 	return res, errors.EnsureStack(err)
+}
+
+// ListTables returns an array of SchemaTable structs that represent the tables.
+func ListTables(ctx context.Context, db *DB, owner string) ([]SchemaTable, error) {
+	query := fmt.Sprintf(`
+		SELECT schemaname, tablename
+		FROM pg_catalog.pg_tables
+		WHERE schemaname != 'pg_catalog'
+		  AND schemaname != 'information_schema'
+		  AND tableowner = '%s'
+		ORDER BY schemaname, tablename;
+	`, owner)
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, errors.EnsureStack(fmt.Errorf("could not list tables: %s", err.Error()))
+	}
+	defer rows.Close()
+	var tables []SchemaTable
+	if err := sqlx.StructScan(rows, &tables); err != nil {
+		return nil, errors.EnsureStack(err)
+	}
+	return tables, nil
+}
+
+// GetScannedRows queries db and calls MapScanRows on the response rows.
+func GetScannedRows(ctx context.Context, db *DB, query string) ([]RowMap, error) {
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, errors.EnsureStack(err)
+	}
+	defer rows.Close()
+	scannedRows, err := MapScanRows(rows)
+	if err != nil {
+		return nil, errors.EnsureStack(err)
+	}
+	return scannedRows, nil
+}
+
+// MapScanRows iterates through rows and returns an array of sqlx.MapScan results. This is useful
+// for when you want to capture the results, but don't know what columns the query can return
+// or when you don't want to create a struct to represent the columns.
+func MapScanRows(rows *sql.Rows) ([]RowMap, error) {
+	var processedRows []RowMap
+	for rows.Next() {
+		row := RowMap{}
+		if err := sqlx.MapScan(rows, row); err != nil {
+			return nil, err
+		}
+		processedRows = append(processedRows, row)
+	}
+	return processedRows, nil
+}
+
+// GetMainColumn returns the 'key' column if it exists for SchemaTable table. Otherwise, it queries the db and returns
+// the column_name where ordinal_position is 1. This column can be used to order future queries against this table.
+func GetMainColumn(ctx context.Context, db *DB, table *SchemaTable) (string, error) {
+	keyExists, err := KeyColumnExists(ctx, db, table)
+	if err != nil {
+		return "", err
+	}
+	if keyExists {
+		return "key", nil
+	}
+	query := fmt.Sprintf(`
+		SELECT column_name FROM INFORMATION_SCHEMA.COLUMNS
+		WHERE table_schema = '%s'
+		  AND table_name = '%s'
+		  AND ordinal_position = 1;
+	`, table.SchemaName, table.TableName)
+	scannedRows, err := GetScannedRows(ctx, db, query)
+	if err != nil {
+		return "", err
+	}
+	column := ""
+	for _, value := range scannedRows[0] {
+		column = fmt.Sprintf("%s", value)
+		break
+	}
+	return column, nil
+}
+
+// KeyColumnExists returns true if the SchemaTable table has a 'key' column.
+func KeyColumnExists(ctx context.Context, db *DB, table *SchemaTable) (bool, error) {
+	query := fmt.Sprintf(`
+		SELECT column_name FROM INFORMATION_SCHEMA.COLUMNS
+		WHERE table_schema = '%s'
+		  AND table_name = '%s'
+		  AND column_name = 'key';
+	`, table.SchemaName, table.TableName)
+	scannedRows, err := GetScannedRows(ctx, db, query)
+	if err != nil {
+		return false, err
+	}
+	if len(scannedRows) > 0 {
+		return true, nil
+	}
+	return false, nil
 }
 
 func postgresDSN(u URL, password string) (string, error) {

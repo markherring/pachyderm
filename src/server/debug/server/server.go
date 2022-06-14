@@ -3,7 +3,6 @@ package server
 import (
 	"archive/tar"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,7 +16,6 @@ import (
 
 	"github.com/gogo/protobuf/jsonpb"
 	"github.com/gogo/protobuf/types"
-	"github.com/jmoiron/sqlx"
 	"github.com/pachyderm/pachyderm/v2/src/client"
 	"github.com/pachyderm/pachyderm/v2/src/debug"
 	"github.com/pachyderm/pachyderm/v2/src/internal/clientsdk"
@@ -94,7 +92,7 @@ func (s *debugServer) handleRedirect(
 						return err
 					}
 					if wantDatabase {
-						return s.collectDatabaseStats(ctx, tw, databasePrefix)
+						return s.collectDatabaseDump(ctx, tw, databasePrefix)
 					}
 				case *debug.Filter_Pipeline:
 					pipelineInfo, err := pachClient.InspectPipeline(f.Pipeline.Name, true)
@@ -126,7 +124,7 @@ func (s *debugServer) handleRedirect(
 					return s.handleWorkerRedirect(ctx, tw, pod, collectWorker, redirect)
 				case *debug.Filter_Database:
 					if wantDatabase {
-						return s.collectDatabaseStats(ctx, tw, databasePrefix)
+						return s.collectDatabaseDump(ctx, tw, databasePrefix)
 					}
 				}
 			}
@@ -150,7 +148,7 @@ func (s *debugServer) handleRedirect(
 				}
 			}
 			if wantDatabase {
-				if err := s.collectDatabaseStats(ctx, tw, databasePrefix); err != nil {
+				if err := s.collectDatabaseDump(ctx, tw, databasePrefix); err != nil {
 					return err
 				}
 			}
@@ -952,6 +950,18 @@ func redirectDump(ctx context.Context, c debug.DebugClient, filter *debug.Filter
 	return grpcutil.NewStreamingBytesReader(dumpC, nil), nil
 }
 
+func (s *debugServer) collectDatabaseDump(ctx context.Context, tw *tar.Writer, prefix ...string) error {
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, 1*time.Minute)
+	defer cancel()
+	if err := s.collectDatabaseStats(ctxWithTimeout, tw, prefix...); err != nil {
+		return err
+	}
+	if err := s.collectDatabaseTables(ctxWithTimeout, tw, prefix...); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *debugServer) collectDatabaseStats(ctx context.Context, tw *tar.Writer, prefix ...string) error {
 	if err := s.collectDatabaseActivities(ctx, tw, prefix...); err != nil {
 		return err
@@ -966,47 +976,47 @@ func (s *debugServer) collectDatabaseStats(ctx context.Context, tw *tar.Writer, 
 }
 
 func (s *debugServer) collectDatabaseActivities(ctx context.Context, tw *tar.Writer, prefix ...string) error {
-	return s.collectDatabaseQuery(ctx, tw, "activities", s.queryDatabaseActivities, prefix...)
+	return s.collectDatabaseQuery(ctx, tw, "activities", nil, s.queryDatabaseActivities, prefix...)
 }
 
 func (s *debugServer) collectDatabaseRowCount(ctx context.Context, tw *tar.Writer, prefix ...string) error {
-	return s.collectDatabaseQuery(ctx, tw, "row-counts", s.queryDatabaseRowCounts, prefix...)
+	return s.collectDatabaseQuery(ctx, tw, "row-counts", nil, s.queryDatabaseRowCounts, prefix...)
 }
 
 func (s *debugServer) collectDatabaseTableSizes(ctx context.Context, tw *tar.Writer, prefix ...string) error {
-	return s.collectDatabaseQuery(ctx, tw, "table-sizes", s.queryDatabaseTableSizes, prefix...)
+	return s.collectDatabaseQuery(ctx, tw, "table-sizes", nil, s.queryDatabaseTableSizes, prefix...)
 }
 
-func (s *debugServer) collectDatabaseQuery(ctx context.Context, tw *tar.Writer, fileName string,
-	queryFunc func(ctx context.Context, db *pachsql.DB, w io.Writer) error, prefix ...string) error {
+func (s *debugServer) collectDatabaseQuery(ctx context.Context, tw *tar.Writer, fileName string, table *pachsql.SchemaTable,
+	queryFunc func(ctx context.Context, w io.Writer, table *pachsql.SchemaTable) error, prefix ...string) error {
 	return collectDebugFile(tw, fileName, "json", func(w io.Writer) error {
-		if err := queryFunc(ctx, s.database, w); err != nil {
+		if err := queryFunc(ctx, w, table); err != nil {
 			return errors.EnsureStack(err)
 		}
 		return nil
 	}, prefix...)
 }
 
-func (s *debugServer) queryDatabaseRowCounts(ctx context.Context, db *pachsql.DB, w io.Writer) error {
+func (s *debugServer) queryDatabaseRowCounts(ctx context.Context, w io.Writer, table *pachsql.SchemaTable) error {
 	query := `
 		SELECT schemaname, relname, n_live_tup, seq_scan, idx_scan
 		FROM pg_stat_user_tables
 		ORDER BY schemaname, relname;
 	`
-	return s.queryDatabase(ctx, query, w)
+	return s.writeQueryResponseToJSON(ctx, query, w)
 }
 
-func (s *debugServer) queryDatabaseActivities(ctx context.Context, db *pachsql.DB, w io.Writer) error {
+func (s *debugServer) queryDatabaseActivities(ctx context.Context, w io.Writer, table *pachsql.SchemaTable) error {
 	query := `
 		SELECT current_timestamp - query_start as runtime, datname, usename, client_addr, query
 		FROM pg_stat_activity
 		WHERE state != 'idle'
 		ORDER by runtime DESC;
 	`
-	return s.queryDatabase(ctx, query, w)
+	return s.writeQueryResponseToJSON(ctx, query, w)
 }
 
-func (s *debugServer) queryDatabaseTableSizes(ctx context.Context, db *pachsql.DB, w io.Writer) error {
+func (s *debugServer) queryDatabaseTableSizes(ctx context.Context, w io.Writer, table *pachsql.SchemaTable) error {
 	query := `
 		SELECT nspname AS "schemaname", relname, pg_total_relation_size(C.oid) AS "total_size"
 		FROM pg_class C
@@ -1016,35 +1026,155 @@ func (s *debugServer) queryDatabaseTableSizes(ctx context.Context, db *pachsql.D
 		  AND nspname !~ '^pg_toast'
 		ORDER BY nspname, relname;
 	`
-	return s.queryDatabase(ctx, query, w)
+	return s.writeQueryResponseToJSON(ctx, query, w)
 }
 
-func (s *debugServer) queryDatabase(ctx context.Context, query string, w io.Writer) error {
-	ctxWithTimeout, cancel := context.WithTimeout(ctx, 1*time.Minute)
-	defer cancel()
-	rows, err := s.database.QueryContext(ctxWithTimeout, query)
+func (s *debugServer) collectDatabaseTables(ctx context.Context, tw *tar.Writer, prefix ...string) error {
+	tables, err := pachsql.ListTables(ctx, s.database, "pachyderm")
 	if err != nil {
 		return errors.EnsureStack(err)
 	}
-	defer rows.Close()
-
-	return writeRowsToJSON(rows, w)
-}
-
-func writeRowsToJSON(rows *sql.Rows, w io.Writer) error {
-	var processedRows []map[string]interface{}
-	for rows.Next() {
-		row := map[string]interface{}{}
-		if err := sqlx.MapScan(rows, row); err != nil {
+	for _, table := range tables {
+		table := table // intentional shadow to safely pass by pointer
+		fullPrefix := strings.Join(append(append([]string{}, prefix...), "tables", table.SchemaName), "/")
+		if err := s.collectDatabaseQuery(ctx, tw, table.TableName, &table, s.collectTable, fullPrefix); err != nil {
 			return errors.EnsureStack(err)
 		}
-		processedRows = append(processedRows, row)
 	}
-	marshalledRows, err := json.Marshal(processedRows)
+	return nil
+}
+
+type page string
+
+const (
+	firstPage  page = "firstPage"
+	middlePage page = "middlePage"
+	lastPage   page = "lastPage"
+)
+
+func (s *debugServer) collectTable(ctx context.Context, w io.Writer, table *pachsql.SchemaTable) error {
+	pageSize := 5
+	column, err := pachsql.GetMainColumn(ctx, s.database, table)
 	if err != nil {
 		return errors.EnsureStack(err)
 	}
-	formatter := strings.NewReplacer("[{", "[\n\t{", "}]", "}\n]", "},", "},\n\t")
+	queryTemplate := fmt.Sprintf(`
+		SELECT * FROM %s.%s WHERE %s > {{lastitem}} 
+		ORDER BY %s FETCH FIRST %d ROWS ONLY;`,
+		table.SchemaName, table.TableName, column, column, pageSize)
+	rows, err := s.getFirstPage(ctx, column, pageSize, table)
+	if err != nil {
+		return errors.EnsureStack(err)
+	}
+	if len(rows) == 0 {
+		return writeAllRowsToJSON(rows, w)
+	} else {
+		if err := writeRowPageToJSON(rows, w, firstPage); err != nil {
+			return errors.EnsureStack(err)
+		}
+	}
+	toString := setToStringBasedOnType(rows[len(rows)-1][column])
+	for len(rows) == pageSize {
+		lastItem := rows[len(rows)-1][column]
+		query := strings.ReplaceAll(queryTemplate, "{{lastitem}}", toString(lastItem))
+		rows, err = pachsql.GetScannedRows(ctx, s.database, query)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				//deliberately ignore error so we can return deadline exceeded.
+				writeRowPageToJSON(rows, w, lastPage)
+				return errors.EnsureStack(err)
+			}
+			return errors.EnsureStack(err)
+		}
+		fmt.Printf("writing %d rows for %s.%s \n", len(rows), table.SchemaName, table.TableName)
+		if err := writeRowPageToJSON(rows, w, middlePage); err != nil {
+			//deliberately ignore error so we can return deadline exceeded.
+			writeRowPageToJSON(rows, w, lastPage)
+			return errors.EnsureStack(err)
+		}
+	}
+	return writeRowPageToJSON(rows, w, lastPage)
+}
+
+func (s *debugServer) getFirstPage(ctx context.Context, column string, pageSize int, table *pachsql.SchemaTable) ([]map[string]interface{}, error) {
+	query := fmt.Sprintf(`
+		SELECT * FROM %s.%s
+		ORDER BY %s 
+		FETCH FIRST %d ROWS ONLY;
+	`, table.SchemaName, table.TableName, column, pageSize)
+	pageRows, err := pachsql.GetScannedRows(ctx, s.database, query)
+	if err != nil {
+		return nil, errors.EnsureStack(err)
+	}
+	return pageRows, nil
+}
+
+func setToStringBasedOnType(item interface{}) func(item interface{}) string {
+	switch fmt.Sprint(reflect.TypeOf(item)) {
+	case "time.Time":
+		return func(item interface{}) string {
+			asTime, ok := item.(time.Time)
+			if !ok {
+				return ""
+			}
+			formattedTime := asTime.Format("2006-01-2 15:04:05.000000 -07:00")
+			return fmt.Sprintf("'%v'", formattedTime)
+		}
+	case "[]uint8":
+		return func(item interface{}) string {
+			asByteArray, ok := item.([]uint8)
+			if !ok {
+				return ""
+			}
+			asString := ""
+			for _, num := range asByteArray {
+				asString += fmt.Sprintf("%02X", num)
+			}
+			return fmt.Sprintf("byteain('\\x%s')", asString)
+		}
+	default:
+		return func(item interface{}) string {
+			return fmt.Sprintf("'%v'", item)
+		}
+	}
+}
+
+func (s *debugServer) writeQueryResponseToJSON(ctx context.Context, query string, w io.Writer) error {
+	scannedRows, err := pachsql.GetScannedRows(ctx, s.database, query)
+	if err != nil {
+		return errors.EnsureStack(err)
+	}
+	return writeAllRowsToJSON(scannedRows, w)
+}
+
+func writeAllRowsToJSON(rowMap []pachsql.RowMap, w io.Writer) error {
+	return writeRowsToJSON(rowMap, w, "[{", "[\n\t{", "}]", "}\n]\n", "},", "},\n\t")
+}
+
+func writeRowPageToJSON(rowMap []pachsql.RowMap, w io.Writer, p page) error {
+	var replacerOpts []string
+	switch p {
+	case firstPage:
+		replacerOpts = []string{"[{", "[\n\t{", "}]", "},\n\t", "},", "},\n\t"}
+	case middlePage:
+		replacerOpts = []string{"[{", "\n\t{", "}]", "},\n\t", "},", "},\n\t"}
+	case lastPage: // in this case, just write the end of the dictionary
+		if _, err := w.Write([]byte("\n]\n")); err != nil {
+			return errors.EnsureStack(err)
+		}
+		return nil
+	default:
+		return errors.New("page should be either firstPage, middlePage, or lastPage")
+	}
+	return writeRowsToJSON(rowMap, w, replacerOpts...)
+}
+
+func writeRowsToJSON(rowMap []pachsql.RowMap, w io.Writer, opts ...string) error {
+	marshalledRows, err := json.Marshal(rowMap)
+	if err != nil {
+		return errors.EnsureStack(err)
+	}
+	formatter := strings.NewReplacer(opts...)
 	formattedJson := []byte(formatter.Replace(string(marshalledRows)))
 	if _, err = w.Write(formattedJson); err != nil {
 		return errors.EnsureStack(err)
