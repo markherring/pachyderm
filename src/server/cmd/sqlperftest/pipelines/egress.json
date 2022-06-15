@@ -1,0 +1,35 @@
+{
+    "pipeline": {
+        "name": "egress"
+    },
+    "description": "Measure the time it takes to write results back to DB.",
+    "input": {
+        "pfs": {
+            "glob": "/data/*",
+            "repo": "ingress",
+            "name": "input"
+        }
+    },
+    "transform": {
+        "cmd": [
+            "sh"
+        ],
+        "stdin": [
+            "mkdir -p /pfs/out/stats",
+            "FILES=/pfs/input/data/*",
+            "for f in $FILES",
+            "do",
+            "echo $f",
+            "/app/sqlperftest egress csv $f 'snowflake://albert@WDEUWUD-CJ80497/PERF_TEST?warehouse=COMPUTE_WH' > /pfs/out/stats/$(basename $f)",
+            "done"
+        ],
+        "image": "pachyderm/sqlperftest:local",
+        "secrets": [
+            {
+                "name": "snowflakesecret",
+                "env_var": "PACHYDERM_SQL_PASSWORD",
+                "key": "PACHYDERM_SQL_PASSWORD"
+            }
+        ]
+    }
+}

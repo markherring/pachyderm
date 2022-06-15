@@ -75,6 +75,21 @@ builds:
       - amd64
     gcflags:
       - "all=-trimpath={{.Env.PWD}}"
+  -
+    id: sqlperftest 
+    dir: src/server/cmd/sqlperftest
+    main: main.go
+    binary: sqlperftest
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - "{{ .Env.LD_FLAGS }}"
+    goos:
+      - linux
+    goarch:
+      - amd64
+    gcflags:
+      - "all=-trimpath={{.Env.PWD}}"
 
 archives:
   - format: binary
@@ -162,4 +177,17 @@ dockers:
     extra_files:
       - LICENSE
       - licenses
- 
+  -
+    image_templates:
+      - pachyderm/sqlperftest
+      - pachyderm/sqlperftest:local
+    ids:
+      - sqlperftest
+    goos: linux
+    goarch: amd64
+    skip_push: false
+    dockerfile: Dockerfile.sqlperftest
+    build_flag_templates:
+      - "--progress=plain"
+      - "--label=version={{.Version}}"
+      - "--label=release={{.Version}}"

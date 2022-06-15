@@ -1,0 +1,22 @@
+{
+    "pipeline": {
+        "name": "combine_egress"
+    },
+    "description": "Combines multiple stat files into a single file.",
+    "input": {
+        "pfs": {
+            "repo": "egress",
+            "glob": "/stats"
+        }
+    },
+    "transform": {
+        "cmd": [
+            "sh"
+        ],
+        "stdin": [
+            "echo 'starting combine'",
+            "echo $(ls /pfs/egress/stats)",
+            "cat /pfs/egress/stats/* > /pfs/out/egress_stats.csv"
+        ]
+    }
+}

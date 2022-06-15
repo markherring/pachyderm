@@ -1,0 +1,35 @@
+{
+    "pipeline": {
+        "name": "ingress"
+    },
+    "description": "Measure the time it takes to query a table.",
+    "input": {
+        "pfs": {
+            "glob": "/*",
+            "repo": "tables",
+            "name": "input"
+        }
+    },
+    "transform": {
+        "cmd": [
+            "sh"
+        ],
+        "stdin": [
+            "FILES=/pfs/input/*",
+            "mkdir -p /pfs/out/stats",
+            "for f in $FILES",
+            "do",
+            "/app/sqlperftest ingress csv $f snowflake://albert@WDEUWUD-CJ80497/PERF_TEST_INGRESS?warehouse=COMPUTE_WH > /pfs/out/stats/$(basename $f)",
+            "done"
+        ],
+        "image": "pachyderm/sqlperftest:local",
+        "secrets": [
+            {
+                "name": "snowflakesecret",
+                "env_var": "PACHYDERM_SQL_PASSWORD",
+                "key": "PACHYDERM_SQL_PASSWORD"
+            }
+        ]
+    },
+    "autoscaling": true
+}
