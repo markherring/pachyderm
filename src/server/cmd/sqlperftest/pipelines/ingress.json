@@ -19,10 +19,10 @@
             "mkdir -p /pfs/out/stats",
             "for f in $FILES",
             "do",
-            "/app/sqlperftest ingress csv $f snowflake://albert@WDEUWUD-CJ80497/PERF_TEST_INGRESS?warehouse=COMPUTE_WH > /pfs/out/stats/$(basename $f)",
+            "/app/sqlperftest ingress csv $f snowflake://albert@WDEUWUD-CJ80497/PERF_TEST_INGRESS?warehouse=COMPUTE_WH > /pfs/out/stats/$(basename $f).csv",
             "done"
         ],
-        "image": "pachyderm/sqlperftest:local",
+        "image": "albertpachyderm/sqlperftest:test",
         "secrets": [
             {
                 "name": "snowflakesecret",
@@ -31,5 +31,8 @@
             }
         ]
     },
-    "autoscaling": true
+    "datum_tries": 1,
+    "parallelism_spec": {
+        "constant": 8
+    }
 }

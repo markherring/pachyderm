@@ -46,19 +46,19 @@ func main() {
 	var result resultStats
 	switch op {
 	case "ingress":
-		log.Info("beginning ingress")
+		log.Infof("beginning ingress on table %s.%s", schema, filename)
 		result, err = ingress(*db, fileFormat, schema, filename)
 		if err != nil {
 			log.Fatal(err)
 		}
-		log.Info("finished ingress")
+		log.Infof("finished ingress on table %s.%s", schema, filename)
 	case "egress":
-		log.Info("beginning egress")
+		log.Infof("beginning egress on table %s.%s", schema, filename)
 		result, err = egress(*db, fileFormat, schema, filename)
 		if err != nil {
 			log.Fatal(err)
 		}
-		log.Info("finished egress")
+		log.Infof("finished egress on table %s.%s", schema, filename)
 	default:
 		log.Fatalf("Unrecognized operation %s", op)
 	}
@@ -106,12 +106,12 @@ func egress(db pachsql.DB, fileFormat, schema, tableName string) (result resultS
 		return result, err
 	}
 	tablePath := fmt.Sprintf("%s.%s", schema, tableName)
-	log.Info("dropping table", tablePath)
-	_, err = tx.Exec(fmt.Sprintf("DELETE FROM %s", tablePath))
+	log.Info("truncating table ", tablePath)
+	_, err = tx.Exec(fmt.Sprintf("truncate table if exists %s", tablePath))
 	if err != nil {
 		return result, err
 	}
-	log.Info("dropped table", tablePath)
+	log.Info("finished truncating table ", tablePath)
 	tableInfo, err := pachsql.GetTableInfoTx(tx, tablePath)
 	if err != nil {
 		return result, err

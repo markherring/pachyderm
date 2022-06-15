@@ -6,10 +6,13 @@ import (
 
 	"github.com/pachyderm/pachyderm/v2/src/internal/errors"
 	"github.com/pachyderm/pachyderm/v2/src/internal/pachsql"
+	"github.com/sirupsen/logrus"
 )
 
 // rowLimit limits the number of rows per batch in an INSERT statement
 const rowLimit = 1000
+
+var log = logrus.StandardLogger()
 
 // SQLTupleWriter writes tuples to a SQL database.
 type SQLTupleWriter struct {
@@ -28,6 +31,7 @@ func (m *SQLTupleWriter) WriteTuple(t Tuple) error {
 }
 
 func (m *SQLTupleWriter) Flush() error {
+	log.Info(fmt.Sprintf("flushing data to %s", m.tableInfo.Name))
 	if len(m.buf) == 0 {
 		return nil
 	}

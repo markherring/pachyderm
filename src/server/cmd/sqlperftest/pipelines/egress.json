@@ -5,7 +5,7 @@
     "description": "Measure the time it takes to write results back to DB.",
     "input": {
         "pfs": {
-            "glob": "/data/*",
+            "glob": "/data/tpch_sf1.*",
             "repo": "ingress",
             "name": "input"
         }
@@ -19,11 +19,10 @@
             "FILES=/pfs/input/data/*",
             "for f in $FILES",
             "do",
-            "echo $f",
-            "/app/sqlperftest egress csv $f 'snowflake://albert@WDEUWUD-CJ80497/PERF_TEST?warehouse=COMPUTE_WH' > /pfs/out/stats/$(basename $f)",
+            "/app/sqlperftest egress csv $f 'snowflake://albert@WDEUWUD-CJ80497/PERF_TEST_EGRESS?warehouse=COMPUTE_WH' > /pfs/out/stats/$(basename $f).csv",
             "done"
         ],
-        "image": "pachyderm/sqlperftest:local",
+        "image": "albertpachyderm/sqlperftest:test",
         "secrets": [
             {
                 "name": "snowflakesecret",
@@ -31,5 +30,9 @@
                 "key": "PACHYDERM_SQL_PASSWORD"
             }
         ]
+    },
+    "datum_tries": 1,
+    "parallelism_spec": {
+        "constant": 8
     }
 }
